@@ -69,14 +69,14 @@ func getFeedRule(name, args string) []string {
 
 func (c *customChain) add() error {
 	err := runProg("iptables", []string{"-t", c.table, "-N", c.name}, false)
-	if err == nil && c.ipv6 == true {
+	if err == nil && c.ipv6 == true && node.GetIPv6AllocRange() != nil {
 		err = runProg("ip6tables", []string{"-t", c.table, "-N", c.name}, false)
 		if err == nil {
 			useIp6tables = true
 		} else {
 			useIp6tables = false
-			log.WithError(err).Info("No ip6tables support, IPv6 redirects will not work.")
-			// err = nil
+			log.WithError(err).Error("No ip6tables support, IPv6 redirects will not work.")
+			err = nil
 		}
 	}
 	return err
@@ -214,9 +214,14 @@ var ciliumChains = []customChain{
 
 // RemoveRules removes iptables rules installed by Cilium.
 func RemoveRules() {
+	// Set of tables that has had iptables rules in any Cilium version
 	tables := []string{"nat", "mangle", "raw", "filter"}
 	for _, t := range tables {
 		removeCiliumRules(t, "iptables")
+	}
+	// Set of tables that has had ip6tables rules in any Cilium version
+	tables6 := []string{"mangle"}
+	for _, t := range tables6 {
 		removeCiliumRules(t, "ip6tables")
 	}
 
@@ -455,13 +460,14 @@ func InstallRules(ifName string) error {
 		// Masquerade all traffic from a local endpoint that is routed
 		// back to an endpoint on the same node. This happens if a
 		// local endpoint talks to a Kubernetes NodePort or HostPort.
+		matchToProxy := fmt.Sprintf("%#08x/%#08x", proxy.MagicMarkIsToProxy, proxy.MagicMarkHostMask)
 		if err := runProg("iptables", []string{
 			"-t", "nat",
 			"-A", ciliumPostNatChain,
 			"-s", node.GetIPv4AllocRange().String(),
 			"-m", "mark", "!", "--mark", matchFromIPSecDecrypt, // Don't match ipsec traffic
 			"-m", "mark", "!", "--mark", matchFromIPSecEncrypt, // Don't match ipsec traffic
-			"-m", "mark", "!", "--mark", matchFromProxy, // Don't match proxy traffic
+			"-m", "mark", "!", "--mark", matchToProxy, // Don't match traffic to proxy
 			"-o", ifName,
 			"-m", "comment", "--comment", "cilium hostport loopback masquerade",
 			"-j", "SNAT", "--to-source", node.GetHostMasqueradeIPv4().String()}, false); err != nil {
